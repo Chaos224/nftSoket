@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,27 +19,25 @@ type LoginResponse struct {
 	IPFSHash string `json:"ipfs_hash"`
 }
 
-// Descărcăm certificatul public de pe server și salvăm local
+// Descărcăm certificatul public de pe server
 func downloadCert(certDir string) error {
-	server := getServerConfig() // Adresa serverului
+	server := getServerConfig()
 	certPath := filepath.Join(certDir, "server_cert.pem")
 
 	resp, err := http.Get(server + "/cert")
 	if err != nil {
-		return fmt.Errorf("failed to connect to server at %s: %w", server, err)
+		return fmt.Errorf("failed to connect to server: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("server returned status %d when downloading certificate", resp.StatusCode)
+		return fmt.Errorf("server returned status %d", resp.StatusCode)
 	}
 
-	// Creare director pentru certificate dacă nu există
 	if err := os.MkdirAll(certDir, os.ModePerm); err != nil {
 		return fmt.Errorf("failed to create cert directory: %w", err)
 	}
 
-	// Salvăm certificatul
 	out, err := os.Create(certPath)
 	if err != nil {
 		return fmt.Errorf("failed to save certificate: %w", err)
@@ -59,7 +58,6 @@ func login(username, password string) (string, string, string) {
 	certDir := "certs"
 	certPath := filepath.Join(certDir, "server_cert.pem")
 
-	// Descărcăm certificatul dacă nu există
 	if _, err := os.Stat(certPath); os.IsNotExist(err) {
 		fmt.Println("[INFO] Downloading certificate...")
 		if err := downloadCert(certDir); err != nil {
@@ -67,29 +65,26 @@ func login(username, password string) (string, string, string) {
 		}
 	}
 
-	// Citim certificatul descărcat
-	caCert, err := os.ReadFile(certPath)
+	caCert, err := ioutil.ReadFile(certPath)
 	if err != nil {
 		return "Failed to read certificate", "", ""
 	}
 
-	// Adăugăm certificatul în pool-ul CA
 	caCertPool := x509.NewCertPool()
 	if !caCertPool.AppendCertsFromPEM(caCert) {
 		return "Failed to parse certificate", "", ""
 	}
 
-	// Configurăm clientul HTTP pentru a valida certificatul
-	server := getServerConfig() // Adresa serverului
+	server := getServerConfig()
 	httpClient := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				RootCAs: caCertPool, // Adăugăm certificatul auto-semnat
+				RootCAs:    caCertPool,
+				MinVersion: tls.VersionTLS12,
 			},
 		},
 	}
 
-	// Trimiterea cererii de login
 	data := map[string]string{"username": username, "password": password}
 	body, _ := json.Marshal(data)
 
