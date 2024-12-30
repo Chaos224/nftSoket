@@ -1,105 +1,71 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-
-	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/widget"
+	"os"
+	"path/filepath"
+	// Biblioteca pentru WinFsp
 )
 
-func createMainWindow(a fyne.App) fyne.Window {
-	w := a.NewWindow("NFT Client")
-	w.Resize(fyne.NewSize(400, 300))
+// MountVirtualDrive montează un drive virtual folosind WinFsp.
+func MountVirtualDrive(mountPoint, sourcePath string) error {
+	if _, err := os.Stat(sourcePath); os.IsNotExist(err) {
+		return fmt.Errorf("source path does not exist: %s", sourcePath)
+	}
 
-	// Elemente UI pentru Login
-	usernameEntry := widget.NewEntry()
-	usernameEntry.SetPlaceHolder("Username")
+	absMountPoint, err := filepath.Abs(mountPoint)
+	if err != nil {
+		return fmt.Errorf("failed to resolve mount point path: %w", err)
+	}
 
-	passwordEntry := widget.NewPasswordEntry()
-	passwordEntry.SetPlaceHolder("Password")
-
-	loginButton := widget.NewButton("Login", func() {
-		username := usernameEntry.Text
-		password := passwordEntry.Text
-
-		if username == "" || password == "" {
-			dialog.ShowError(errors.New("Username and Password are required!"), w)
-			return
+	// Creare director dacă nu există
+	if _, err := os.Stat(absMountPoint); os.IsNotExist(err) {
+		if mkdirErr := os.MkdirAll(absMountPoint, os.ModePerm); mkdirErr != nil {
+			return fmt.Errorf("failed to create mount point directory: %w", mkdirErr)
 		}
+	}
 
-		// Apelăm funcția de login
-		message, userDir, ipfsHash := login(username, password)
-		if message == "Login successful" {
-			dialog.ShowInformation("Success", "Logged in successfully!", w)
+	fmt.Printf("Attempting to mount source: %s at %s\n", sourcePath, absMountPoint)
 
-			// Montare disc virtual
-			mountPoint := "Z:\\"
-			if err := mountVirtualDrive(mountPoint, ipfsHash, getServerConfig()); err != nil {
-				dialog.ShowError(fmt.Errorf("Failed to mount virtual drive: %v", err), w)
-				return
-			}
-			dialog.ShowInformation("Success", "Virtual drive mounted successfully!", w)
+	// Configurare sistem de fișiere virtual
+	fs := &fuse.FSOptions{
+		Name: "NFTClientDrive",
+	}
 
-			// Sincronizare fișiere (opțional)
-			go func() {
-				if err := startSyncService(mountPoint, userDir); err != nil {
-					dialog.ShowError(fmt.Errorf("Synchronization failed: %v", err), w)
-				}
-			}()
-		} else {
-			dialog.ShowError(errors.New(message), w)
+	server, err := fuse.NewServer(fs, absMountPoint, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create FUSE server: %w", err)
+	}
+
+	// Pornire server
+	go func() {
+		if serveErr := server.Serve(); serveErr != nil {
+			fmt.Printf("Server error: %v\n", serveErr)
 		}
-	})
+	}()
 
-	// Buton pentru Configurare
-	configButton := widget.NewButton("Configuration", func() {
-		showConfigWindow(a)
-	})
+	// Așteptare pentru montare completă
+	<-server.Ready
+	if server.MountError != nil {
+		return fmt.Errorf("mount failed: %w", server.MountError)
+	}
 
-	// Buton pentru Montare și Demontare Drive
-	mountButton := widget.NewButton("Mount Drive", func() {
-		// Add logic to mount drive
-	})
-
-	unmountButton := widget.NewButton("Unmount Drive", func() {
-		// Add logic to unmount drive
-	})
-
-	// Layout principal
-	content := container.NewVBox(
-		widget.NewLabel("Login"),
-		usernameEntry,
-		passwordEntry,
-		loginButton,
-		configButton,
-		mountButton,
-		unmountButton,
-	)
-
-	w.SetContent(content)
-	return w
+	fmt.Println("Drive mounted successfully!")
+	return nil
 }
 
-func showConfigWindow(a fyne.App) {
-	w := a.NewWindow("Configuration")
-	w.Resize(fyne.NewSize(400, 200))
+// UnmountVirtualDrive demontează un drive virtual.
+func UnmountVirtualDrive(mountPoint string) error {
+	absMountPoint, err := filepath.Abs(mountPoint)
+	if err != nil {
+		return fmt.Errorf("failed to resolve mount point path: %w", err)
+	}
 
-	serverEntry := widget.NewEntry()
-	serverEntry.SetText(getServerConfig()) // Citim adresa serverului din configurație
+	fmt.Printf("Attempting to unmount: %s\n", absMountPoint)
+	if err := fuse.Unmount(absMountPoint); err != nil {
+		return fmt.Errorf("failed to unmount drive: %w", err)
+	}
 
-	// Salvare configurare
-	saveButton := widget.NewButton("Save", func() {
-		saveServerConfig(serverEntry.Text)
-		dialog.ShowInformation("Success", "Configuration saved!", w)
-	})
-
-	w.SetContent(container.NewVBox(
-		widget.NewLabel("Server Address"),
-		serverEntry,
-		saveButton,
-	))
-	w.Show()
+	fmt.Println("Drive unmounted successfully!")
+	return nil
 }

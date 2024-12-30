@@ -1,151 +1,104 @@
 package main
 
 import (
-	"bytes"
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
-	"net/http"
+	"log"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
 )
 
-type LoginResponse struct {
-	Message  string `json:"message"`
-	UserDir  string `json:"user_dir"`
-	IPFSHash string `json:"ipfs_hash"`
+type IPFSClient struct {
+	Shell *shell.Shell
 }
 
-// Descărcăm certificatul public de pe server
-func downloadCert(certDir string) error {
-	server := getServerConfig()
-	certPath := filepath.Join(certDir, "server_cert.pem")
+// NewIPFSClient creates a new instance of IPFSClient.
+func NewIPFSClient(apiURL string) *IPFSClient {
+	return &IPFSClient{
+		Shell: shell.NewShell(apiURL),
+	}
+}
 
-	resp, err := http.Get(server + "/cert")
+// AddFile uploads a file to IPFS.
+func (client *IPFSClient) AddFile(filePath string) (string, error) {
+	file, err := os.Open(filePath)
 	if err != nil {
-		return fmt.Errorf("failed to connect to server: %w", err)
+		return "", fmt.Errorf("failed to open file: %v", err)
 	}
-	defer resp.Body.Close()
+	defer file.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("server returned status %d", resp.StatusCode)
-	}
-
-	if err := os.MkdirAll(certDir, os.ModePerm); err != nil {
-		return fmt.Errorf("failed to create cert directory: %w", err)
-	}
-
-	out, err := os.Create(certPath)
+	hash, err := client.Shell.Add(file)
 	if err != nil {
-		return fmt.Errorf("failed to save certificate: %w", err)
+		return "", fmt.Errorf("failed to add file to IPFS: %v", err)
 	}
-	defer out.Close()
 
-	_, err = io.Copy(out, resp.Body)
+	return hash, nil
+}
+
+// GetFile downloads a file from IPFS and saves it to the specified path.
+func (client *IPFSClient) GetFile(hash string, outputPath string) error {
+	reader, err := client.Shell.Cat(hash)
 	if err != nil {
-		return fmt.Errorf("failed to write certificate: %w", err)
+		return fmt.Errorf("failed to fetch file from IPFS: %v", err)
+	}
+	defer reader.Close()
+
+	outputFile, err := os.Create(outputPath)
+	if err != nil {
+		return fmt.Errorf("failed to create output file: %v", err)
+	}
+	defer outputFile.Close()
+
+	_, err = io.Copy(outputFile, reader)
+	if err != nil {
+		return fmt.Errorf("failed to write file: %v", err)
 	}
 
-	fmt.Printf("[INFO] Certificate downloaded and saved to %s\n", certPath)
 	return nil
 }
 
-// Login utilizând certificatul descărcat
-func login(username, password string) (string, string, string) {
-	certDir := "certs"
-	certPath := filepath.Join(certDir, "server_cert.pem")
-
-	if _, err := os.Stat(certPath); os.IsNotExist(err) {
-		fmt.Println("[INFO] Downloading certificate...")
-		if err := downloadCert(certDir); err != nil {
-			return "Failed to download certificate", "", ""
-		}
+// PinFile pins a file on IPFS.
+func (client *IPFSClient) PinFile(hash string) error {
+	if err := client.Shell.Pin(hash); err != nil {
+		return fmt.Errorf("failed to pin file: %v", err)
 	}
-
-	caCert, err := ioutil.ReadFile(certPath)
-	if err != nil {
-		return "Failed to read certificate", "", ""
-	}
-
-	caCertPool := x509.NewCertPool()
-	if !caCertPool.AppendCertsFromPEM(caCert) {
-		return "Failed to parse certificate", "", ""
-	}
-
-	server := getServerConfig()
-	httpClient := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs:    caCertPool,
-				MinVersion: tls.VersionTLS12,
-			},
-		},
-	}
-
-	data := map[string]string{"username": username, "password": password}
-	body, _ := json.Marshal(data)
-
-	resp, err := httpClient.Post(server+"/login", "application/json", bytes.NewReader(body))
-	if err != nil {
-		return "Connection failed", "", ""
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "Login failed", "", ""
-	}
-
-	var response LoginResponse
-	json.NewDecoder(resp.Body).Decode(&response)
-	return response.Message, response.UserDir, response.IPFSHash
+	return nil
 }
 
-func addFileToIPFS(filePath string) (string, error) {
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.Command("ipfs.exe", "add", filePath)
-	} else {
-		cmd = exec.Command("ipfs", "add", filePath)
+// UnpinFile unpins a file from IPFS.
+func (client *IPFSClient) UnpinFile(hash string) error {
+	if err := client.Shell.Unpin(hash); err != nil {
+		return fmt.Errorf("failed to unpin file: %v", err)
 	}
-	output, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return string(output), nil
+	return nil
 }
 
-func getFileFromIPFS(hash string) (string, error) {
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.Command("ipfs.exe", "get", hash)
-	} else {
-		cmd = exec.Command("ipfs", "get", hash)
-	}
-	output, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return string(output), nil
-}
-
+// Example usage
 func main() {
-	filePath := "example.txt"
-	hash, err := addFileToIPFS(filePath)
-	if err != nil {
-		fmt.Println("Failed to add file to IPFS:", err)
-		return
-	}
-	fmt.Println("File added to IPFS with hash:", hash)
+	apiURL := "localhost:5001"
+	client := NewIPFSClient(apiURL)
 
-	content, err := getFileFromIPFS(hash)
+	// Add a file to IPFS
+	hash, err := client.AddFile("example.txt")
 	if err != nil {
-		fmt.Println("Failed to get file from IPFS:", err)
-		return
+		log.Fatalf("Error adding file: %v", err)
 	}
-	fmt.Println("File content:", content)
+	log.Printf("File added to IPFS with hash: %s", hash)
+
+	// Download the file from IPFS
+	if err := client.GetFile(hash, "downloaded_example.txt"); err != nil {
+		log.Fatalf("Error getting file: %v", err)
+	}
+	log.Println("File downloaded successfully")
+
+	// Pin the file
+	if err := client.PinFile(hash); err != nil {
+		log.Fatalf("Error pinning file: %v", err)
+	}
+	log.Println("File pinned successfully")
+
+	// Unpin the file
+	if err := client.UnpinFile(hash); err != nil {
+		log.Fatalf("Error unpinning file: %v", err)
+	}
+	log.Println("File unpinned successfully")
 }
