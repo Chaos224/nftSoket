@@ -10,7 +10,9 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 )
 
 type LoginResponse struct {
@@ -101,4 +103,49 @@ func login(username, password string) (string, string, string) {
 	var response LoginResponse
 	json.NewDecoder(resp.Body).Decode(&response)
 	return response.Message, response.UserDir, response.IPFSHash
+}
+
+func addFileToIPFS(filePath string) (string, error) {
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("ipfs.exe", "add", filePath)
+	} else {
+		cmd = exec.Command("ipfs", "add", filePath)
+	}
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return string(output), nil
+}
+
+func getFileFromIPFS(hash string) (string, error) {
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("ipfs.exe", "get", hash)
+	} else {
+		cmd = exec.Command("ipfs", "get", hash)
+	}
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return string(output), nil
+}
+
+func main() {
+	filePath := "example.txt"
+	hash, err := addFileToIPFS(filePath)
+	if err != nil {
+		fmt.Println("Failed to add file to IPFS:", err)
+		return
+	}
+	fmt.Println("File added to IPFS with hash:", hash)
+
+	content, err := getFileFromIPFS(hash)
+	if err != nil {
+		fmt.Println("Failed to get file from IPFS:", err)
+		return
+	}
+	fmt.Println("File content:", content)
 }

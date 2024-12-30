@@ -1,6 +1,6 @@
-module nftclient/client
+module nftclient
 
-go 1.23.4
+go 1.18
 
 require (
 	fyne.io/fyne/v2 v2.5.3 // indirect

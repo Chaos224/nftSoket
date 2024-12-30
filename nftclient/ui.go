@@ -59,6 +59,15 @@ func createMainWindow(a fyne.App) fyne.Window {
 		showConfigWindow(a)
 	})
 
+	// Buton pentru Montare și Demontare Drive
+	mountButton := widget.NewButton("Mount Drive", func() {
+		// Add logic to mount drive
+	})
+
+	unmountButton := widget.NewButton("Unmount Drive", func() {
+		// Add logic to unmount drive
+	})
+
 	// Layout principal
 	content := container.NewVBox(
 		widget.NewLabel("Login"),
@@ -66,6 +75,8 @@ func createMainWindow(a fyne.App) fyne.Window {
 		passwordEntry,
 		loginButton,
 		configButton,
+		mountButton,
+		unmountButton,
 	)
 
 	w.SetContent(content)

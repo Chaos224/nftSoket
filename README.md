@@ -1,2 +1,0 @@
-# nftclient
-Client IPFS privat

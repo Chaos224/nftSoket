@@ -3,24 +3,24 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 )
 
 // Montarea discului virtual
-func mountVirtualDrive(mountPoint, ipfsHash, server string) error {
-	fmt.Printf("[INFO] Mounting virtual drive: %s -> %s\n", mountPoint, ipfsHash)
+func mountVirtualDrive(driveLetter, mountPoint string) error {
+	cmd := exec.Command("net", "use", driveLetter, mountPoint)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
 
-	// Creare punct de montare dacă nu există
-	if _, err := os.Stat(mountPoint); os.IsNotExist(err) {
-		if err := os.MkdirAll(mountPoint, os.ModePerm); err != nil {
-			return fmt.Errorf("failed to create mount point: %w", err)
-		}
-	}
-
-	// Simulare montare IPFS (logică reală poate folosi WinFsp sau CGOFuse)
-	fmt.Printf("[INFO] Simulating mount for IPFS hash: %s\n", ipfsHash)
-	return nil
+func unmountVirtualDrive(driveLetter string) error {
+	cmd := exec.Command("net", "use", driveLetter, "/delete")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // Sincronizarea fișierelor
@@ -67,4 +67,17 @@ func uploadFileToServer(filePath string) error {
 
 	// Aici poți adăuga logica reală pentru încărcare pe server, utilizând un API
 	return nil
+}
+
+func main() {
+	driveLetter := "Z:"
+	mountPoint := "\\\\server\\share"
+
+	if err := mountVirtualDrive(driveLetter, mountPoint); err != nil {
+		fmt.Println("Failed to mount virtual drive:", err)
+		return
+	}
+	defer unmountVirtualDrive(driveLetter)
+
+	fmt.Println("Virtual drive mounted successfully.")
 }

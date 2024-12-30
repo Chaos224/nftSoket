@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"runtime"
 )
 
 const configFile = "config.json"
@@ -14,13 +15,19 @@ type Config struct {
 func getServerConfig() string {
 	file, err := os.Open(configFile)
 	if err != nil {
-		return "https://localhost:8081"
+		if runtime.GOOS == "windows" {
+			return "http://localhost:8081"
+		}
+		return "http://localhost:8081"
 	}
 	defer file.Close()
 
 	var config Config
 	if err := json.NewDecoder(file).Decode(&config); err != nil {
-		return "https://localhost:8081"
+		if runtime.GOOS == "windows" {
+			return "http://localhost:8081"
+		}
+		return "http://localhost:8081"
 	}
 	return config.ServerAddress
 }

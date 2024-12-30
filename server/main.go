@@ -18,6 +18,17 @@ type User struct {
 	Dir      string `json:"dir"`
 }
 
+type LoginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type LoginResponse struct {
+	Message  string `json:"message"`
+	UserDir  string `json:"user_dir"`
+	IPFSHash string `json:"ipfs_hash"`
+}
+
 var (
 	users      = make(map[string]User)
 	usersMutex sync.Mutex
@@ -60,9 +71,10 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := map[string]string{
-		"message":  "Login successful",
-		"user_dir": user.Dir,
+	response := LoginResponse{
+		Message:  "Login successful",
+		UserDir:  user.Dir,
+		IPFSHash: "Qm...",
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
@@ -71,7 +83,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 // Handler pentru certificatul public
 func certHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("[INFO] Serving cert.pem")
-	http.ServeFile(w, r, "cert.pem")
+	http.ServeFile(w, r, "server_cert.pem")
 }
 
 func main() {
@@ -102,6 +114,6 @@ func main() {
 		TLSConfig: tlsConfig,
 	}
 
-	fmt.Println("Server running on https://localhost:8081")
+	fmt.Println("Server running on http://localhost:8081")
 	log.Fatal(server.ListenAndServeTLS("cert.pem", "key.pem"))
 }
