@@ -180,6 +180,41 @@ the client. *Known limitation:* a file that crosses the quota mid-upload stores
 its chunks-so-far before the refusing chunk; whole-file pre-reservation/rollback
 is a planned refinement.
 
+### Payment middleware (pluggable: card now, crypto later)
+
+Payment is a **middleware**, not a monolith: one `payment.Provider` interface +
+a registry, with each method in its own subpackage (`payment/stripe`,
+`payment/bitcoin`, `payment/manual`). The domain and control plane depend only on
+the interface; concrete providers are wired in at the composition root
+(`cmd/vaultserver`) from environment variables. Adding a method = one new
+subpackage + one `Register(...)` — nothing else changes, so methods can be added
+and improved zone by zone.
+
+```bash
+# Enable card payments (Stripe) and on-chain Bitcoin by setting env on the server
+export STRIPE_SECRET_KEY=sk_live_...   STRIPE_WEBHOOK_SECRET=whsec_...
+export BITCOIN_ADDRESS=bc1q...         BITCOIN_WEBHOOK_SECRET=...  BITCOIN_MIN_CONF=2
+./vaultserver --listen :9000 --state ./control.json     # payments=[bitcoin manual stripe]
+
+# Operator can issue an ad-hoc invoice (e.g. a 4.99 EUR / 10 GB top-up)
+./vaultadmin invoice-create --id <account_id> --amount 499
+
+# Customer pays by card (Stripe Checkout) or crypto (BIP21)
+./vaultctl invoices
+./vaultctl checkout --invoice <id> --provider stripe    # -> hosted checkout URL
+./vaultctl checkout --invoice <id> --provider bitcoin   # -> address + bitcoin: URI
+```
+
+Confirmation is by **signed webhook**: Stripe's `checkout.session.completed`
+(verified via the `Stripe-Signature` HMAC, with replay-window protection) or a
+chain watcher's HMAC-signed callback once Bitcoin reaches `MIN_CONF`
+confirmations. Forged/misrouted callbacks are rejected (HTTP 400) and never
+settle an invoice. The full card flow — checkout → signed webhook → invoice paid,
+and forged webhook rejected — is verified live and in tests. *(Stripe = card
+payments today; Bitcoin provider is structurally complete and pluggable, pending
+a production address-derivation source and chain watcher. Prices are examples;
+e.g. 4.99 EUR / 10 GB — finalize later.)*
+
 ## Stability — updates must not break stored data
 
 All persisted/transmitted formats are explicitly versioned and frozen behind a
@@ -197,12 +232,17 @@ builds offline and an upstream change cannot silently break it.
   zero-trust nodes, network failover & self-heal, vendored deps, format contract.
 - **Phase 3 — Control server: billing & space management** ✅
   self-hosted `vaultserver` (accounts, plans, quota, usage, invoices, payments;
-  local JSON state; pluggable payment), `vaultadmin` operator CLI, node-side
-  quota enforcement (opt-in `--control`), `vaultctl account`.
-- **Phase 2b / 3b — next** *(planned)*
+  local JSON state), `vaultadmin` operator CLI, node-side quota enforcement
+  (opt-in `--control`), `vaultctl account`.
+- **Phase 3b — Payment middleware** ✅
+  pluggable `payment.Provider` + registry; Stripe (card) and Bitcoin (crypto)
+  and manual providers in independent subpackages; checkout + signed-webhook
+  settlement; `vaultctl invoices/checkout`, `vaultadmin invoice-create/providers`.
+- **Phase 2b / 3c — next** *(planned)*
   erasure coding (Reed–Solomon m-of-n) instead of full replication; node
   discovery; Argon2id passphrase stretching; key rotation; whole-file quota
-  pre-reservation; mutual-TLS between nodes and control; audit log.
+  pre-reservation; mutual-TLS between nodes and control; audit log; production
+  Bitcoin address-derivation + chain watcher.
 - **Phase 4 — Native clients**
   Windows desktop app (encrypted virtual drive), plus macOS/Linux/Android/iOS/web
   sharing the same `core` over a stable API.

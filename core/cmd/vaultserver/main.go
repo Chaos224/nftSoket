@@ -13,9 +13,32 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 
 	"nftvault/control"
+	"nftvault/payment"
+	"nftvault/payment/bitcoin"
+	"nftvault/payment/manual"
+	"nftvault/payment/stripe"
 )
+
+// buildPayments assembles the payment middleware from the environment. This is
+// the only place that knows about concrete providers — adding a new method is a
+// new subpackage plus a Register call here, nothing else changes.
+func buildPayments() *payment.Registry {
+	reg := payment.NewRegistry()
+	// Manual is always available (offline / bank transfer, operator-settled).
+	reg.Register(manual.New(os.Getenv("NFTVAULT_MANUAL_PAYEE")))
+
+	if sk := os.Getenv("STRIPE_SECRET_KEY"); sk != "" {
+		reg.Register(stripe.New(sk, os.Getenv("STRIPE_WEBHOOK_SECRET"), os.Getenv("STRIPE_API_BASE")))
+	}
+	if addr := os.Getenv("BITCOIN_ADDRESS"); addr != "" {
+		minConf, _ := strconv.Atoi(os.Getenv("BITCOIN_MIN_CONF"))
+		reg.Register(bitcoin.New(bitcoin.StaticAddress(addr), nil, os.Getenv("BITCOIN_WEBHOOK_SECRET"), minConf))
+	}
+	return reg
+}
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:9000", "address to listen on")
@@ -33,14 +56,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("state: %v", err)
 	}
-	svc := control.NewService(store, nil, control.ManualProvider{})
+	payments := buildPayments()
+	svc := control.NewService(store, nil, control.ManualProvider{}).WithPayments(payments)
 	srv := &http.Server{Addr: *listen, Handler: control.NewAPI(svc, adminToken).Handler()}
 
 	scheme := "http"
 	if *tlsCert != "" && *tlsKey != "" {
 		scheme = "https"
 	}
-	log.Printf("vaultserver (control plane) on %s://%s  state=%s  payment=manual", scheme, *listen, *state)
+	log.Printf("vaultserver (control plane) on %s://%s  state=%s  payments=%v", scheme, *listen, *state, payments.Names())
 	if scheme == "https" {
 		log.Fatal(srv.ListenAndServeTLS(*tlsCert, *tlsKey))
 	}

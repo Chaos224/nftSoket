@@ -88,6 +88,9 @@ type Invoice struct {
 	Status      InvoiceStatus `json:"status"`
 	CreatedAt   time.Time     `json:"created_at"`
 	PaidAt      *time.Time    `json:"paid_at,omitempty"`
+	// Payment middleware traceability (forward-compatible, optional).
+	CheckoutProvider string `json:"checkout_provider,omitempty"`
+	CheckoutRef      string `json:"checkout_ref,omitempty"`
 }
 
 // Payment records money received against an invoice.

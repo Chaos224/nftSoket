@@ -37,6 +37,8 @@ func usage() {
   account-list
   account-suspend  --id ACCT_ID
   account-activate --id ACCT_ID
+  invoice-create   --id ACCT_ID [--amount CENTS]   (ad-hoc / top-up invoice)
+  providers
   billing-run
   billing-enforce  --grace-hours 168
   invoice-pay   --id INVOICE_ID [--method manual]
@@ -74,6 +76,11 @@ func run(cmd string, args []string) error {
 		return post("/v1/admin/accounts/"+flagVal(args, "--id", "")+"/status", map[string]any{"status": "suspended"})
 	case "account-activate":
 		return post("/v1/admin/accounts/"+flagVal(args, "--id", "")+"/status", map[string]any{"status": "active"})
+	case "invoice-create":
+		amount, _ := strconv.ParseInt(flagVal(args, "--amount", "0"), 10, 64)
+		return post("/v1/admin/accounts/"+flagVal(args, "--id", "")+"/invoice", map[string]any{"amount_cents": amount})
+	case "providers":
+		return get("/v1/admin/payment-providers")
 	case "billing-run":
 		return post("/v1/admin/billing/run", map[string]any{})
 	case "billing-enforce":

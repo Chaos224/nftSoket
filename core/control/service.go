@@ -1,14 +1,18 @@
 package control
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"nftvault/payment"
 )
 
 // Clock returns the current time; injectable so billing logic is testable.
@@ -37,10 +41,11 @@ func (ManualProvider) Charge(Account, Invoice) (Payment, error) {
 
 // Service is the control-plane API over a Store.
 type Service struct {
-	mu      sync.Mutex
-	store   *Store
-	now     Clock
-	payment PaymentProvider
+	mu       sync.Mutex
+	store    *Store
+	now      Clock
+	payment  PaymentProvider
+	payments *payment.Registry // optional checkout/webhook middleware
 }
 
 // NewService wires a store; clock/provider default to real time / manual.
@@ -52,6 +57,22 @@ func NewService(store *Store, clock Clock, provider PaymentProvider) *Service {
 		provider = ManualProvider{}
 	}
 	return &Service{store: store, now: clock, payment: provider}
+}
+
+// WithPayments attaches the pluggable payment middleware (Stripe, Bitcoin,
+// manual, …). Without it, checkout/webhook routes are simply unavailable and
+// invoices are settled by the operator. Returns the service for chaining.
+func (s *Service) WithPayments(reg *payment.Registry) *Service {
+	s.payments = reg
+	return s
+}
+
+// PaymentProviders lists the enabled payment method names.
+func (s *Service) PaymentProviders() []string {
+	if s.payments == nil {
+		return nil
+	}
+	return s.payments.Names()
 }
 
 func randID(prefix string) string {
@@ -304,11 +325,55 @@ func (s *Service) RunBilling() (issued []Invoice, err error) {
 	return issued, nil
 }
 
+// IssueInvoice creates an immediate open invoice for an account (ad-hoc charge
+// or top-up). If amountCents <= 0 the account's plan price is used.
+func (s *Service) IssueInvoice(accountID string, amountCents int64) (Invoice, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, err := s.store.GetAccount(accountID)
+	if err != nil {
+		return Invoice{}, err
+	}
+	plan, err := s.store.GetPlan(a.PlanID)
+	if err != nil {
+		return Invoice{}, err
+	}
+	amt := amountCents
+	if amt <= 0 {
+		amt = plan.PriceCents
+	}
+	if amt <= 0 {
+		return Invoice{}, fmt.Errorf("%w: amount must be > 0", ErrInvalid)
+	}
+	now := s.now()
+	inv := Invoice{
+		ID:          randID("inv"),
+		AccountID:   a.ID,
+		PeriodStart: now,
+		PeriodEnd:   now,
+		AmountCents: amt,
+		Currency:    plan.Currency,
+		Status:      InvoiceOpen,
+		CreatedAt:   now,
+	}
+	if err := s.store.SaveInvoice(inv); err != nil {
+		return Invoice{}, err
+	}
+	return inv, nil
+}
+
 // PayInvoice records a payment against an open invoice and reactivates a
 // suspended account once it has no outstanding balance.
 func (s *Service) PayInvoice(invoiceID, method string) (Payment, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.settleLocked(invoiceID, method)
+}
+
+// settleLocked marks an open invoice paid, records a payment, and reactivates a
+// suspended-but-now-settled account. The caller must hold s.mu. Idempotent: a
+// non-open invoice returns ErrInvalid so webhooks can be retried safely.
+func (s *Service) settleLocked(invoiceID, method string) (Payment, error) {
 	inv, err := s.store.GetInvoice(invoiceID)
 	if err != nil {
 		return Payment{}, err
@@ -326,7 +391,6 @@ func (s *Service) PayInvoice(invoiceID, method string) (Payment, error) {
 	if err := s.store.SavePayment(pay); err != nil {
 		return Payment{}, err
 	}
-	// Reactivate if now settled.
 	if s.outstanding(inv.AccountID) == 0 {
 		if a, err := s.store.GetAccount(inv.AccountID); err == nil && a.Status == StatusSuspended {
 			a.Status = StatusActive
@@ -334,6 +398,83 @@ func (s *Service) PayInvoice(invoiceID, method string) (Payment, error) {
 		}
 	}
 	return pay, nil
+}
+
+// --- payment middleware ----------------------------------------------------
+
+// CreateCheckout asks a payment provider to start collecting an open invoice and
+// returns the payer instructions (a card-checkout URL, a Bitcoin address, …).
+func (s *Service) CreateCheckout(ctx context.Context, invoiceID, providerName, successURL, cancelURL string) (payment.CheckoutSession, error) {
+	if s.payments == nil {
+		return payment.CheckoutSession{}, fmt.Errorf("%w: no payment providers configured", ErrInvalid)
+	}
+	prov, err := s.payments.Get(providerName)
+	if err != nil {
+		return payment.CheckoutSession{}, err
+	}
+	s.mu.Lock()
+	inv, err := s.store.GetInvoice(invoiceID)
+	if err != nil {
+		s.mu.Unlock()
+		return payment.CheckoutSession{}, err
+	}
+	if inv.Status != InvoiceOpen {
+		s.mu.Unlock()
+		return payment.CheckoutSession{}, fmt.Errorf("%w: invoice not open", ErrInvalid)
+	}
+	acc, _ := s.store.GetAccount(inv.AccountID)
+	s.mu.Unlock()
+
+	sess, err := prov.StartCheckout(ctx, payment.CheckoutRequest{
+		InvoiceID:   inv.ID,
+		AccountID:   inv.AccountID,
+		AmountCents: inv.AmountCents,
+		Currency:    inv.Currency,
+		Description: fmt.Sprintf("NFT Vault — %s", acc.Name),
+		SuccessURL:  successURL,
+		CancelURL:   cancelURL,
+	})
+	if err != nil {
+		return payment.CheckoutSession{}, err
+	}
+	// Record which provider/session is collecting this invoice.
+	s.mu.Lock()
+	if cur, err := s.store.GetInvoice(invoiceID); err == nil && cur.Status == InvoiceOpen {
+		cur.CheckoutProvider = providerName
+		cur.CheckoutRef = sess.Reference
+		_ = s.store.SaveInvoice(cur)
+	}
+	s.mu.Unlock()
+	return sess, nil
+}
+
+// HandleWebhook authenticates a provider callback and settles the referenced
+// invoice if it reports payment. Returns whether an invoice was settled.
+func (s *Service) HandleWebhook(providerName string, headers http.Header, body []byte) (settled bool, err error) {
+	if s.payments == nil {
+		return false, fmt.Errorf("%w: no payment providers configured", ErrInvalid)
+	}
+	prov, err := s.payments.Get(providerName)
+	if err != nil {
+		return false, err
+	}
+	res, err := prov.VerifyWebhook(headers, body)
+	if err != nil {
+		return false, err // unauthenticated/forged callback
+	}
+	if !res.Paid || res.InvoiceID == "" {
+		return false, nil // acknowledged but nothing to settle
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.settleLocked(res.InvoiceID, providerName); err != nil {
+		// Already settled (retry) is not an error to the provider.
+		if errors.Is(err, ErrInvalid) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // EnforceDelinquency suspends active accounts that have an open invoice older

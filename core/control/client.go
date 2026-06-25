@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"nftvault/payment"
 )
 
 // Client talks to a control server on behalf of an account. The account's API
@@ -104,6 +106,41 @@ func (c *Client) Status(token string) (AccountStatusView, error) {
 		return AccountStatusView{}, err
 	}
 	return v, nil
+}
+
+// Invoices lists the account's invoices.
+func (c *Client) Invoices(token string) ([]Invoice, error) {
+	resp, err := c.req(http.MethodGet, "/v1/account/invoices", token, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer drain(resp)
+	if resp.StatusCode != http.StatusOK {
+		return nil, mapStatus(resp.StatusCode, readMsg(resp))
+	}
+	var out []Invoice
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Checkout starts a payment session for one of the account's invoices.
+func (c *Client) Checkout(token, invoiceID, provider, successURL, cancelURL string) (payment.CheckoutSession, error) {
+	body := map[string]string{"provider": provider, "success_url": successURL, "cancel_url": cancelURL}
+	resp, err := c.req(http.MethodPost, "/v1/account/invoices/"+invoiceID+"/checkout", token, body)
+	if err != nil {
+		return payment.CheckoutSession{}, err
+	}
+	defer drain(resp)
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		return payment.CheckoutSession{}, mapStatus(resp.StatusCode, readMsg(resp))
+	}
+	var sess payment.CheckoutSession
+	if err := json.NewDecoder(resp.Body).Decode(&sess); err != nil {
+		return payment.CheckoutSession{}, err
+	}
+	return sess, nil
 }
 
 // Healthy reports whether the control server answers its probe.

@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -42,12 +43,19 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/admin/billing/run", a.admin(a.runBilling))
 	mux.HandleFunc("POST /v1/admin/billing/enforce", a.admin(a.enforce))
 	mux.HandleFunc("POST /v1/admin/invoices/{id}/pay", a.admin(a.payInvoice))
+	mux.HandleFunc("POST /v1/admin/accounts/{id}/invoice", a.admin(a.issueInvoice))
+	mux.HandleFunc("GET /v1/admin/payment-providers", a.admin(a.listProviders))
 
 	// Account routes (authenticated by the account's own token).
 	mux.HandleFunc("GET /v1/account", a.account(a.accountStatus))
 	mux.HandleFunc("GET /v1/account/invoices", a.account(a.accountInvoices))
 	mux.HandleFunc("POST /v1/account/usage/reserve", a.account(a.reserve))
 	mux.HandleFunc("POST /v1/account/usage/release", a.account(a.release))
+	mux.HandleFunc("POST /v1/account/invoices/{id}/checkout", a.account(a.checkout))
+
+	// Public payment webhook — authenticated by the provider's own signature,
+	// not by a vault token.
+	mux.HandleFunc("POST /v1/payments/webhook/{provider}", a.webhook)
 
 	return withAPIVersion(mux)
 }
@@ -193,6 +201,23 @@ func (a *API) payInvoice(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, pay)
 }
 
+func (a *API) issueInvoice(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		AmountCents int64 `json:"amount_cents"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	inv, err := a.svc.IssueInvoice(r.PathValue("id"), req.AmountCents)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, inv)
+}
+
+func (a *API) listProviders(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, map[string]any{"providers": a.svc.PaymentProviders()})
+}
+
 // --- account handlers ------------------------------------------------------
 
 func (a *API) accountStatus(w http.ResponseWriter, r *http.Request, acc Account) {
@@ -235,6 +260,55 @@ func (a *API) release(w http.ResponseWriter, r *http.Request, acc Account) {
 		return
 	}
 	writeJSON(w, 200, map[string]string{"status": "ok"})
+}
+
+// checkout starts a payment session for one of the account's own invoices.
+func (a *API) checkout(w http.ResponseWriter, r *http.Request, acc Account) {
+	invID := r.PathValue("id")
+	// Ownership: an account may only pay its own invoices.
+	owns := false
+	for _, inv := range a.svc.Invoices(acc.ID) {
+		if inv.ID == invID {
+			owns = true
+			break
+		}
+	}
+	if !owns {
+		httpError(w, http.StatusNotFound, "invoice not found")
+		return
+	}
+	var req struct {
+		Provider   string `json:"provider"`
+		SuccessURL string `json:"success_url"`
+		CancelURL  string `json:"cancel_url"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	sess, err := a.svc.CreateCheckout(r.Context(), invID, req.Provider, req.SuccessURL, req.CancelURL)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, sess)
+}
+
+// --- public webhook --------------------------------------------------------
+
+func (a *API) webhook(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "read error")
+		return
+	}
+	settled, err := a.svc.HandleWebhook(r.PathValue("provider"), r.Header, body)
+	if err != nil {
+		// Verification failure or unknown provider: tell the sender it's bad so
+		// a forged/misrouted call is not silently accepted.
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"settled": settled})
 }
 
 // --- helpers ---------------------------------------------------------------

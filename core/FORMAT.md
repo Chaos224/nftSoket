@@ -17,6 +17,7 @@ fails the build if any of these change incompatibly.
 | Control wire protocol | `X-Vault-Api: 1` header; routes under `/v1/...` | `control` |
 | Control state file | JSON snapshot (`plans/accounts/usage/invoices/payments`) | `control` |
 | API tokens | `vlt_<hex>`; looked up by `sha256(token)` hex | `control` |
+| Payment webhooks | provider-defined; authenticated by HMAC signature (Stripe `Stripe-Signature`, watcher `X-Signature`) | `payment/*` |
 | Paper access key | BIP39 (12/24 words) + optional passphrase; HKDF salt `nftvault-v1-salt` | `paperkey` |
 
 ## Rules for changes

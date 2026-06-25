@@ -61,6 +61,10 @@ func main() {
 		err = cmdHealth(os.Args[2:])
 	case "account":
 		err = cmdAccount(os.Args[2:])
+	case "invoices":
+		err = cmdInvoices(os.Args[2:])
+	case "checkout":
+		err = cmdCheckout(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -86,8 +90,11 @@ func usage() {
   get     <root> [storage] --out FILE       retrieve + decrypt
   health  <root> [storage]    show which storage points hold the data
   account [--control URL]     show plan, space used/free, and billing status
+  invoices [--control URL]    list this account's invoices
+  checkout --invoice ID [--provider stripe|bitcoin|manual]   pay an invoice
 
 Secrets: set NFTVAULT_MNEMONIC / NFTVAULT_PASSPHRASE to avoid prompts.
+Billing: set NFTVAULT_CONTROL (server URL) and NFTVAULT_ACCOUNT_TOKEN.
 Storage [storage]: either
   --node URL   (repeatable, >=2) self-hosted vaultnode points; token via
                NFTVAULT_NODE_TOKEN. Or set NFTVAULT_NODES=url1,url2.
@@ -402,15 +409,9 @@ func cmdHealth(args []string) error {
 // NFTVAULT_ACCOUNT_TOKEN or prompted; the server URL from --control or
 // NFTVAULT_CONTROL.
 func cmdAccount(args []string) error {
-	url := flagVal(args, "--control", os.Getenv("NFTVAULT_CONTROL"))
-	if url == "" {
-		return fmt.Errorf("set --control URL or NFTVAULT_CONTROL")
-	}
-	token := os.Getenv("NFTVAULT_ACCOUNT_TOKEN")
-	if token == "" {
-		fmt.Fprint(os.Stderr, "Account API token: ")
-		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-		token = strings.TrimSpace(line)
+	url, token, err := controlAuth(args)
+	if err != nil {
+		return err
 	}
 	st, err := control.NewClient(url).Status(token)
 	if err != nil {
@@ -427,6 +428,73 @@ func cmdAccount(args []string) error {
 		humanBytes(st.BytesUsed), humanBytes(st.QuotaBytes), pct, humanBytes(st.RemainingBytes), st.ObjectCount)
 	fmt.Printf("billing  : %.2f %s outstanding, period ends %s\n",
 		float64(st.OutstandingCts)/100, st.Currency, st.PeriodEnd.Format("2006-01-02"))
+	return nil
+}
+
+// controlAuth resolves the control URL and account token shared by the
+// account/invoices/checkout commands.
+func controlAuth(args []string) (url, token string, err error) {
+	url = flagVal(args, "--control", os.Getenv("NFTVAULT_CONTROL"))
+	if url == "" {
+		return "", "", fmt.Errorf("set --control URL or NFTVAULT_CONTROL")
+	}
+	token = os.Getenv("NFTVAULT_ACCOUNT_TOKEN")
+	if token == "" {
+		fmt.Fprint(os.Stderr, "Account API token: ")
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		token = strings.TrimSpace(line)
+	}
+	return url, token, nil
+}
+
+func cmdInvoices(args []string) error {
+	url, token, err := controlAuth(args)
+	if err != nil {
+		return err
+	}
+	invs, err := control.NewClient(url).Invoices(token)
+	if err != nil {
+		return err
+	}
+	if len(invs) == 0 {
+		fmt.Println("no invoices")
+		return nil
+	}
+	fmt.Printf("%-22s %-8s %10s  %s\n", "INVOICE", "STATUS", "AMOUNT", "PERIOD END")
+	for _, inv := range invs {
+		fmt.Printf("%-22s %-8s %7.2f %s  %s\n", inv.ID, inv.Status,
+			float64(inv.AmountCents)/100, inv.Currency, inv.PeriodEnd.Format("2006-01-02"))
+	}
+	return nil
+}
+
+func cmdCheckout(args []string) error {
+	url, token, err := controlAuth(args)
+	if err != nil {
+		return err
+	}
+	invoice := flagVal(args, "--invoice", "")
+	if invoice == "" {
+		return fmt.Errorf("--invoice ID is required (see: vaultctl invoices)")
+	}
+	provider := flagVal(args, "--provider", "stripe")
+	sess, err := control.NewClient(url).Checkout(token, invoice, provider,
+		flagVal(args, "--success-url", ""), flagVal(args, "--cancel-url", ""))
+	if err != nil {
+		return err
+	}
+	fmt.Printf("provider : %s (%s)\n", sess.Provider, sess.Kind)
+	fmt.Printf("amount   : %.2f %s\n", float64(sess.AmountCents)/100, sess.Currency)
+	switch sess.Kind {
+	case "redirect":
+		fmt.Printf("pay here : %s\n", sess.RedirectURL)
+	case "crypto":
+		fmt.Printf("address  : %s\n", sess.PayAddress)
+		fmt.Printf("uri      : %s\n", sess.PayURI)
+	}
+	if sess.Instructions != "" {
+		fmt.Printf("note     : %s\n", sess.Instructions)
+	}
 	return nil
 }
 
