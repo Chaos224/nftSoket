@@ -1,0 +1,14 @@
+# Build artifacts
+/core/vaultctl
+*.exe
+*.test
+*.out
+
+# Local vault storage / data
+vault-data/
+/core/vault-data/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
