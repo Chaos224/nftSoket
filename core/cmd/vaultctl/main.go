@@ -19,10 +19,23 @@ import (
 	"golang.org/x/term"
 
 	"nftvault/cas"
+	"nftvault/node"
 	"nftvault/paperkey"
 	"nftvault/shamir"
 	"nftvault/vault"
 )
+
+// storageDesc summarizes the configured storage points for display.
+func storageDesc(args []string) string {
+	nodes := flagVals(args, "--node")
+	if env := os.Getenv("NFTVAULT_NODES"); env != "" {
+		nodes = append(nodes, strings.Split(env, ",")...)
+	}
+	if len(nodes) > 0 {
+		return strings.Join(nodes, ", ")
+	}
+	return flagVal(args, "--vault", "vault-data")
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -66,12 +79,15 @@ func usage() {
   restore                        validate a written mnemonic, show fingerprint
   split   --shares N --threshold K   split the master key into Shamir shares
   combine                        recombine shares into the master key (hex)
-  put     <file> [--vault DIR] [--name NAME]   encrypt + store redundantly
-  get     <root> [--vault DIR] --out FILE       retrieve + decrypt
-  health  <root> [--vault DIR]    show which storage points hold the data
+  put     <file> [storage] [--name NAME]   encrypt + store redundantly
+  get     <root> [storage] --out FILE       retrieve + decrypt
+  health  <root> [storage]    show which storage points hold the data
 
 Secrets: set NFTVAULT_MNEMONIC / NFTVAULT_PASSPHRASE to avoid prompts.
-Storage: default backends are DIR/a and DIR/b (DIR defaults to ./vault-data).
+Storage [storage]: either
+  --node URL   (repeatable, >=2) self-hosted vaultnode points; token via
+               NFTVAULT_NODE_TOKEN. Or set NFTVAULT_NODES=url1,url2.
+  --vault DIR  two local directories DIR/a and DIR/b (default ./vault-data).
 `)
 }
 
@@ -84,6 +100,17 @@ func flagVal(args []string, name, def string) string {
 		}
 	}
 	return def
+}
+
+// flagVals returns every value of a repeatable flag (e.g. multiple --node).
+func flagVals(args []string, name string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == name && i+1 < len(args) {
+			out = append(out, args[i+1])
+		}
+	}
+	return out
 }
 
 func positional(args []string) []string {
@@ -142,7 +169,27 @@ func unlockedKey() (*paperkey.AccessKey, error) {
 	return ak, nil
 }
 
-func openStore(vaultDir string) (*cas.Store, error) {
+// buildStore assembles the redundant store from the storage points requested on
+// the command line: one or more remote nodes (--node URL, repeatable, or the
+// NFTVAULT_NODES env var), otherwise two local directories under --vault DIR.
+func buildStore(args []string) (*cas.Store, error) {
+	nodes := flagVals(args, "--node")
+	if env := os.Getenv("NFTVAULT_NODES"); env != "" {
+		nodes = append(nodes, strings.Split(env, ",")...)
+	}
+	if len(nodes) > 0 {
+		token := os.Getenv("NFTVAULT_NODE_TOKEN")
+		backends := make([]cas.Backend, 0, len(nodes))
+		for i, u := range nodes {
+			u = strings.TrimSpace(u)
+			if u == "" {
+				continue
+			}
+			backends = append(backends, node.NewRemoteBackend(fmt.Sprintf("point-%d", i+1), u, token))
+		}
+		return cas.NewStore(backends...)
+	}
+	vaultDir := flagVal(args, "--vault", "vault-data")
 	a, err := cas.NewFSBackend("point-a", filepath.Join(vaultDir, "a"))
 	if err != nil {
 		return nil, err
@@ -262,14 +309,13 @@ func cmdPut(args []string) error {
 		return fmt.Errorf("usage: put <file> [--vault DIR] [--name NAME]")
 	}
 	src := pos[0]
-	vaultDir := flagVal(args, "--vault", "vault-data")
 	name := flagVal(args, "--name", filepath.Base(src))
 
 	ak, err := unlockedKey()
 	if err != nil {
 		return err
 	}
-	store, err := openStore(vaultDir)
+	store, err := buildStore(args)
 	if err != nil {
 		return err
 	}
@@ -286,7 +332,7 @@ func cmdPut(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("stored %q\n  vault       : %s\n  fingerprint : %s\n  root        : %s\n", name, vaultDir, v.Fingerprint(), root)
+	fmt.Printf("stored %q\n  points      : %s\n  fingerprint : %s\n  root        : %s\n", name, storageDesc(args), v.Fingerprint(), root)
 	return nil
 }
 
@@ -300,13 +346,12 @@ func cmdGet(args []string) error {
 	if out == "" {
 		return fmt.Errorf("--out FILE is required")
 	}
-	vaultDir := flagVal(args, "--vault", "vault-data")
 
 	ak, err := unlockedKey()
 	if err != nil {
 		return err
 	}
-	store, err := openStore(vaultDir)
+	store, err := buildStore(args)
 	if err != nil {
 		return err
 	}
@@ -333,8 +378,7 @@ func cmdHealth(args []string) error {
 		return fmt.Errorf("usage: health <root> [--vault DIR]")
 	}
 	root := pos[0]
-	vaultDir := flagVal(args, "--vault", "vault-data")
-	store, err := openStore(vaultDir)
+	store, err := buildStore(args)
 	if err != nil {
 		return err
 	}

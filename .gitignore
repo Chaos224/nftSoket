@@ -1,12 +1,15 @@
 # Build artifacts
 /core/vaultctl
+/core/vaultnode
 *.exe
 *.test
 *.out
 
 # Local vault storage / data
 vault-data/
+node-data/
 /core/vault-data/
+/core/node-data/
 
 # Editor / OS
 .DS_Store

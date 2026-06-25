@@ -115,16 +115,51 @@ authentication/transport to a server, key rotation, erasure coding, and a GUI.
 
 ---
 
+## Self-hosted storage nodes (Phase 2)
+
+Storage points can be **your own networked nodes** instead of local folders, so
+the system is genuinely decentralized while staying 100% self-owned — nothing
+depends on a third-party service. A node only ever holds encrypted,
+content-addressed blocks (zero-trust): even a compromised node cannot read your
+data, and cannot tamper with it undetected (address == hash is checked on both
+write and read).
+
+```bash
+# Run two storage points (on localhost, your servers, anywhere you control)
+export NFTVAULT_NODE_TOKEN="a-long-shared-secret"
+./vaultnode --listen 127.0.0.1:8443 --data ./nodeA --name nodeA &
+./vaultnode --listen 127.0.0.1:8444 --data ./nodeB --name nodeB &
+# (in production pass --tls-cert/--tls-key)
+
+# Point the vault at them
+export NFTVAULT_NODES="http://127.0.0.1:8443,http://127.0.0.1:8444"
+./vaultctl put ./somefile          # replicated across both nodes
+./vaultctl get <root> --out ./restored
+```
+
+If one node goes down, reads transparently fail over to the survivor and
+re-replicate when it returns. Verified live (kill a node mid-flight, data still
+recovers).
+
+## Stability — updates must not break stored data
+
+All persisted/transmitted formats are explicitly versioned and frozen behind a
+contract (see [`core/FORMAT.md`](core/FORMAT.md)), enforced by a build-failing
+compatibility test. Dependencies are **vendored** (`core/vendor/`) so the project
+builds offline and an upstream change cannot silently break it.
+
 ## Roadmap
 
-- **Phase 1 — Security core** ✅ *(this commit)*
+- **Phase 1 — Security core** ✅
   paper key, key schedule, AEAD, content-addressed redundant store, Shamir
   sharing, `vaultctl` CLI, full test suite.
-- **Phase 2 — Decentralized storage network**
-  remote storage backends over authenticated TLS/Noise; erasure coding
-  (e.g. Reed–Solomon m-of-n) instead of plain replication; gossip/DHT discovery;
-  pinning incentives.
-- **Phase 3 — Hardened server**
+- **Phase 2 — Self-hosted decentralized storage** ✅
+  `vaultnode` daemon + `RemoteBackend` client, token auth, optional TLS,
+  zero-trust nodes, network failover & self-heal, vendored deps, format contract.
+- **Phase 2b — next** *(planned)*
+  erasure coding (Reed–Solomon m-of-n) instead of full replication; node
+  discovery; Argon2id passphrase stretching; key rotation.
+- **Phase 3 — Hardened control server**
   replaces the legacy `server/`: mutual-TLS, Argon2id-hashed credentials,
   capability tokens, rate limiting, audit log, no plaintext secrets.
 - **Phase 4 — Native clients**

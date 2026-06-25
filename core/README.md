@@ -13,7 +13,9 @@ everything else must be built on, done correctly.
 | `aead` | XChaCha20-Poly1305 authenticated encryption with a versioned envelope and associated-data binding. |
 | `cas` | Content-addressed store. `Address` = BLAKE2b-256 of the (cipher)bytes. `Store` replicates to ≥2 `Backend`s, fails over, verifies integrity, self-heals. `FSBackend` is a sharded on-disk backend. |
 | `vault` | High-level API: chunk a file, encrypt each chunk, store redundantly, write an encrypted manifest, return a root address; and the reverse. |
-| `cmd/vaultctl` | Reference CLI tying it all together. |
+| `node` | Self-hosted storage point: an HTTP daemon serving `cas.Backend` (versioned `/v1` protocol, bearer-token auth, server-side integrity) plus `RemoteBackend`, a `cas.Backend` client. Zero-trust: nodes see only ciphertext. |
+| `cmd/vaultctl` | Reference CLI tying it all together (local dirs or `--node` remotes). |
+| `cmd/vaultnode` | The storage-node daemon (`--listen`, `--data`, `--tls-cert/key`, `NFTVAULT_NODE_TOKEN`). |
 
 ## Develop
 
@@ -30,10 +32,16 @@ go build -o vaultctl ./cmd/vaultctl
 - `golang.org/x/crypto` — argon2 (reserved for passphrase stretching), chacha20poly1305, blake2b, hkdf
 - `golang.org/x/term` — no-echo passphrase entry
 
+## Stability
+
+Formats are versioned and frozen behind a contract — see [`FORMAT.md`](FORMAT.md).
+Dependencies are vendored, so `GOFLAGS=-mod=vendor GOPROXY=off go build ./...`
+works with no network.
+
 ## Notes / next steps within core
 
-- `cas.Store` currently does full replication; Phase 2 will add an erasure-coded
-  backend (Reed–Solomon) so n points tolerate the loss of any n−k without storing
+- `cas.Store` currently does full replication; a future erasure-coded backend
+  (Reed–Solomon) will let n points tolerate the loss of any n−k without storing
   full copies everywhere.
 - `aead` envelope is versioned (byte 0) so the format can evolve without breaking
   stored data.
