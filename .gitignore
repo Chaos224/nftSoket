@@ -11,6 +11,11 @@ node-data/
 /core/vault-data/
 /core/node-data/
 
+# Control-server local state
+control.json
+control.json.tmp
+/core/control.json
+
 # Editor / OS
 .DS_Store
 .idea/

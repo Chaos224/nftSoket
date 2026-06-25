@@ -8,18 +8,36 @@ import (
 	"strings"
 
 	"nftvault/cas"
+	"nftvault/control"
 )
+
+// QuotaEnforcer authorizes a write against a tenant's offered space. It is
+// satisfied by *control.Client, letting a node delegate billing/quota decisions
+// to the control server. Optional — without it the node runs in shared-token
+// mode exactly as before.
+type QuotaEnforcer interface {
+	Reserve(token string, bytes int64) error
+}
 
 // Server exposes a cas.Backend over HTTP. It is safe for concurrent use.
 type Server struct {
 	backend cas.Backend
-	token   string // bearer token; empty disables auth (local-only use)
+	token   string        // bearer token; empty disables auth (local-only use)
+	quota   QuotaEnforcer // optional; when set, the node enforces per-account quota
 	maxBody int64
 }
 
 // NewServer wraps a backend. token may be empty for trusted local deployments.
 func NewServer(backend cas.Backend, token string) *Server {
 	return &Server{backend: backend, token: token, maxBody: 64 << 20} // 64 MiB cap
+}
+
+// WithQuota switches the node into per-account mode: the bearer token is treated
+// as a control-server account token, and writes are gated by Reserve (quota +
+// billing status). Returns the server for chaining.
+func (s *Server) WithQuota(q QuotaEnforcer) *Server {
+	s.quota = q
+	return s
 }
 
 // Handler returns the http.Handler for the node API.
@@ -41,7 +59,14 @@ func (s *Server) withAPIVersion(next http.Handler) http.Handler {
 				http.Error(w, "unsupported api version", http.StatusBadRequest)
 				return
 			}
-			if !s.authorized(r) {
+			if s.quota != nil {
+				// Per-account mode: a token must be present; writes are fully
+				// validated by the control server via Reserve.
+				if bearerToken(r) == "" {
+					http.Error(w, "account token required", http.StatusUnauthorized)
+					return
+				}
+			} else if !s.authorized(r) {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -50,16 +75,19 @@ func (s *Server) withAPIVersion(next http.Handler) http.Handler {
 	})
 }
 
+func bearerToken(r *http.Request) string {
+	h := r.Header.Get(authHeader)
+	if !strings.HasPrefix(h, authScheme) {
+		return ""
+	}
+	return strings.TrimPrefix(h, authScheme)
+}
+
 func (s *Server) authorized(r *http.Request) bool {
 	if s.token == "" {
 		return true
 	}
-	h := r.Header.Get(authHeader)
-	if !strings.HasPrefix(h, authScheme) {
-		return false
-	}
-	got := strings.TrimPrefix(h, authScheme)
-	return subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) == 1
+	return subtle.ConstantTimeCompare([]byte(bearerToken(r)), []byte(s.token)) == 1
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
@@ -105,6 +133,23 @@ func (s *Server) putBlock(w http.ResponseWriter, r *http.Request) {
 	if cas.Address(data) != addr {
 		http.Error(w, "address does not match content", http.StatusBadRequest)
 		return
+	}
+	// Per-account mode: charge the tenant's quota for genuinely new bytes only
+	// (re-PUT of a block this node already holds uses no additional space).
+	if s.quota != nil {
+		if has, _ := s.backend.Has(addr); !has {
+			if err := s.quota.Reserve(bearerToken(r), int64(len(data))); err != nil {
+				switch {
+				case errors.Is(err, control.ErrQuotaExceeded):
+					http.Error(w, "storage quota exceeded", http.StatusInsufficientStorage)
+				case errors.Is(err, control.ErrSuspended):
+					http.Error(w, "account not active", http.StatusForbidden)
+				default:
+					http.Error(w, "quota check failed: "+err.Error(), http.StatusUnauthorized)
+				}
+				return
+			}
+		}
 	}
 	if err := s.backend.Put(addr, data); err != nil {
 		http.Error(w, "store error", http.StatusInternalServerError)

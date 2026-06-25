@@ -19,6 +19,7 @@ import (
 	"golang.org/x/term"
 
 	"nftvault/cas"
+	"nftvault/control"
 	"nftvault/node"
 	"nftvault/paperkey"
 	"nftvault/shamir"
@@ -58,6 +59,8 @@ func main() {
 		err = cmdGet(os.Args[2:])
 	case "health":
 		err = cmdHealth(os.Args[2:])
+	case "account":
+		err = cmdAccount(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -82,6 +85,7 @@ func usage() {
   put     <file> [storage] [--name NAME]   encrypt + store redundantly
   get     <root> [storage] --out FILE       retrieve + decrypt
   health  <root> [storage]    show which storage points hold the data
+  account [--control URL]     show plan, space used/free, and billing status
 
 Secrets: set NFTVAULT_MNEMONIC / NFTVAULT_PASSPHRASE to avoid prompts.
 Storage [storage]: either
@@ -391,4 +395,50 @@ func cmdHealth(args []string) error {
 		fmt.Printf("  %-10s %s\n", name, status)
 	}
 	return nil
+}
+
+// cmdAccount shows the billing/quota status of an account against a control
+// server. The account API token (distinct from the vault mnemonic) is read from
+// NFTVAULT_ACCOUNT_TOKEN or prompted; the server URL from --control or
+// NFTVAULT_CONTROL.
+func cmdAccount(args []string) error {
+	url := flagVal(args, "--control", os.Getenv("NFTVAULT_CONTROL"))
+	if url == "" {
+		return fmt.Errorf("set --control URL or NFTVAULT_CONTROL")
+	}
+	token := os.Getenv("NFTVAULT_ACCOUNT_TOKEN")
+	if token == "" {
+		fmt.Fprint(os.Stderr, "Account API token: ")
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		token = strings.TrimSpace(line)
+	}
+	st, err := control.NewClient(url).Status(token)
+	if err != nil {
+		return err
+	}
+	pct := 0.0
+	if st.QuotaBytes > 0 {
+		pct = 100 * float64(st.BytesUsed) / float64(st.QuotaBytes)
+	}
+	fmt.Printf("account  : %s (%s)\n", st.Name, st.AccountID)
+	fmt.Printf("status   : %s\n", st.Status)
+	fmt.Printf("plan     : %s\n", st.PlanName)
+	fmt.Printf("space    : %s / %s used (%.1f%%), %s free, %d objects\n",
+		humanBytes(st.BytesUsed), humanBytes(st.QuotaBytes), pct, humanBytes(st.RemainingBytes), st.ObjectCount)
+	fmt.Printf("billing  : %.2f %s outstanding, period ends %s\n",
+		float64(st.OutstandingCts)/100, st.Currency, st.PeriodEnd.Format("2006-01-02"))
+	return nil
+}
+
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for x := n / unit; x >= unit; x /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }

@@ -141,6 +141,45 @@ If one node goes down, reads transparently fail over to the survivor and
 re-replicate when it returns. Verified live (kill a node mid-flight, data still
 recovers).
 
+## Billing & space management (Phase 3)
+
+A self-hosted **control server** (`vaultserver`) manages tenants, the storage
+quota each plan offers, live usage, and billing — with no external database
+(state is a local JSON file) and no hard dependency on a payment processor
+(payment is a pluggable interface; the default is a manual/offline ledger).
+
+```bash
+# Run the control plane
+export NFTVAULT_ADMIN_TOKEN="a-long-admin-secret"
+./vaultserver --listen 127.0.0.1:9000 --state ./control.json &
+
+# Operator: define a plan and create an account (returns a one-time token)
+export NFTVAULT_CONTROL=http://127.0.0.1:9000
+./vaultadmin plan-create --name Demo --quota 4M --price 999 --currency EUR
+./vaultadmin account-create --name Alice --plan <plan_id>   # -> token vlt_...
+
+# Storage nodes enforce that account's quota by consulting the control server
+./vaultnode --listen :8643 --data ./nodeA --control http://127.0.0.1:9000 &
+./vaultnode --listen :8644 --data ./nodeB --control http://127.0.0.1:9000 &
+
+# Client uses the account token; writes over quota are refused (HTTP 507)
+export NFTVAULT_NODE_TOKEN=vlt_...   NFTVAULT_ACCOUNT_TOKEN=vlt_...
+./vaultctl account     # plan, space used/free, billing status
+
+# Operator billing operations
+./vaultadmin billing-run                 # issue invoices for ended periods
+./vaultadmin billing-enforce --grace-hours 168   # suspend unpaid past grace
+./vaultadmin invoice-pay --id <invoice_id>       # settle, reactivate account
+```
+
+What's enforced: an account that is suspended or over its plan's `quota_bytes`
+cannot store more (verified live and in tests). Quota counts the bytes physically
+stored across nodes (e.g. 2 replicas of 1 MiB use ~2 MiB of offered space).
+Enforcement happens on the provider's infrastructure (the node), not on trust in
+the client. *Known limitation:* a file that crosses the quota mid-upload stores
+its chunks-so-far before the refusing chunk; whole-file pre-reservation/rollback
+is a planned refinement.
+
 ## Stability — updates must not break stored data
 
 All persisted/transmitted formats are explicitly versioned and frozen behind a
@@ -156,12 +195,14 @@ builds offline and an upstream change cannot silently break it.
 - **Phase 2 — Self-hosted decentralized storage** ✅
   `vaultnode` daemon + `RemoteBackend` client, token auth, optional TLS,
   zero-trust nodes, network failover & self-heal, vendored deps, format contract.
-- **Phase 2b — next** *(planned)*
+- **Phase 3 — Control server: billing & space management** ✅
+  self-hosted `vaultserver` (accounts, plans, quota, usage, invoices, payments;
+  local JSON state; pluggable payment), `vaultadmin` operator CLI, node-side
+  quota enforcement (opt-in `--control`), `vaultctl account`.
+- **Phase 2b / 3b — next** *(planned)*
   erasure coding (Reed–Solomon m-of-n) instead of full replication; node
-  discovery; Argon2id passphrase stretching; key rotation.
-- **Phase 3 — Hardened control server**
-  replaces the legacy `server/`: mutual-TLS, Argon2id-hashed credentials,
-  capability tokens, rate limiting, audit log, no plaintext secrets.
+  discovery; Argon2id passphrase stretching; key rotation; whole-file quota
+  pre-reservation; mutual-TLS between nodes and control; audit log.
 - **Phase 4 — Native clients**
   Windows desktop app (encrypted virtual drive), plus macOS/Linux/Android/iOS/web
   sharing the same `core` over a stable API.

@@ -14,6 +14,9 @@ fails the build if any of these change incompatibly.
 | Encrypted envelope | first byte `0x01`, then 24-byte nonce, then XChaCha20-Poly1305 ciphertext+tag | `aead` |
 | Manifest | JSON object `{name, size, chunks[]}`, itself sealed in an envelope | `vault.Manifest` |
 | Node wire protocol | `X-Vault-Api: 1` header; routes under `/v1/...` | `node` |
+| Control wire protocol | `X-Vault-Api: 1` header; routes under `/v1/...` | `control` |
+| Control state file | JSON snapshot (`plans/accounts/usage/invoices/payments`) | `control` |
+| API tokens | `vlt_<hex>`; looked up by `sha256(token)` hex | `control` |
 | Paper access key | BIP39 (12/24 words) + optional passphrase; HKDF salt `nftvault-v1-salt` | `paperkey` |
 
 ## Rules for changes

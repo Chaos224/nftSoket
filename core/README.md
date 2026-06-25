@@ -13,9 +13,12 @@ everything else must be built on, done correctly.
 | `aead` | XChaCha20-Poly1305 authenticated encryption with a versioned envelope and associated-data binding. |
 | `cas` | Content-addressed store. `Address` = BLAKE2b-256 of the (cipher)bytes. `Store` replicates to ≥2 `Backend`s, fails over, verifies integrity, self-heals. `FSBackend` is a sharded on-disk backend. |
 | `vault` | High-level API: chunk a file, encrypt each chunk, store redundantly, write an encrypted manifest, return a root address; and the reverse. |
-| `node` | Self-hosted storage point: an HTTP daemon serving `cas.Backend` (versioned `/v1` protocol, bearer-token auth, server-side integrity) plus `RemoteBackend`, a `cas.Backend` client. Zero-trust: nodes see only ciphertext. |
-| `cmd/vaultctl` | Reference CLI tying it all together (local dirs or `--node` remotes). |
-| `cmd/vaultnode` | The storage-node daemon (`--listen`, `--data`, `--tls-cert/key`, `NFTVAULT_NODE_TOKEN`). |
+| `node` | Self-hosted storage point: an HTTP daemon serving `cas.Backend` (versioned `/v1` protocol, bearer-token auth, server-side integrity) plus `RemoteBackend`, a `cas.Backend` client. Zero-trust: nodes see only ciphertext. Optional `WithQuota` enforces control-server quota. |
+| `control` | Control plane: accounts, plans, storage quota ("offered space"), usage, and billing (invoices/payments). Local JSON persistence, pluggable `PaymentProvider` (default manual). HTTP `API` + `Client`. |
+| `cmd/vaultctl` | Reference CLI tying it all together (local dirs or `--node` remotes; `account` shows billing/quota). |
+| `cmd/vaultnode` | The storage-node daemon (`--listen`, `--data`, `--control`, `--tls-cert/key`, `NFTVAULT_NODE_TOKEN`). |
+| `cmd/vaultserver` | The control-plane daemon (`--listen`, `--state`, `--tls-cert/key`, `NFTVAULT_ADMIN_TOKEN`). |
+| `cmd/vaultadmin` | Operator CLI: create plans/accounts, run billing, suspend/activate, pay invoices. |
 
 ## Develop
 

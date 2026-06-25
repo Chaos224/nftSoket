@@ -16,6 +16,7 @@ import (
 	"os"
 
 	"nftvault/cas"
+	"nftvault/control"
 	"nftvault/node"
 )
 
@@ -23,6 +24,7 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:8443", "address to listen on")
 	dataDir := flag.String("data", "node-data", "directory for stored blocks")
 	name := flag.String("name", "node", "backend name (for logs)")
+	controlURL := flag.String("control", "", "control server URL; enables per-account quota/billing enforcement")
 	tlsCert := flag.String("tls-cert", "", "TLS certificate file (recommended)")
 	tlsKey := flag.String("tls-key", "", "TLS key file")
 	flag.Parse()
@@ -33,7 +35,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("storage init: %v", err)
 	}
-	srv := &http.Server{Addr: *listen, Handler: node.NewServer(be, token).Handler()}
+	nodeSrv := node.NewServer(be, token)
+	mode := "shared-token"
+	if *controlURL != "" {
+		nodeSrv = nodeSrv.WithQuota(control.NewClient(*controlURL))
+		mode = "control:" + *controlURL
+	}
+	srv := &http.Server{Addr: *listen, Handler: nodeSrv.Handler()}
 
 	scheme := "http"
 	if *tlsCert != "" && *tlsKey != "" {
@@ -43,7 +51,7 @@ func main() {
 	if token == "" {
 		authNote = "auth: OFF (set NFTVAULT_NODE_TOKEN; bind localhost only)"
 	}
-	log.Printf("vaultnode %q listening on %s://%s  data=%s  %s", *name, scheme, *listen, *dataDir, authNote)
+	log.Printf("vaultnode %q listening on %s://%s  data=%s  %s  mode=%s", *name, scheme, *listen, *dataDir, authNote, mode)
 
 	if scheme == "https" {
 		log.Fatal(srv.ListenAndServeTLS(*tlsCert, *tlsKey))
