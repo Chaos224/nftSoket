@@ -6,11 +6,10 @@ the style of a cryptocurrency wallet. The long-term goal is a fast, decentralize
 ("improved IPFS") backend with a hardened server and native clients for every
 platform.
 
-This repository is being built in phases. **Phase 1 — the security core — is
-implemented, tested, and working today** (see [`core/`](core/)). The earlier
-`nftclient/` and `server/` directories are an initial prototype that does not
-compile; they are kept for reference and are superseded by `core/` (and by the
-hardened server planned in Phase 3).
+This repository is being built in phases. **Phases 1–3b are implemented, tested,
+and working today** (see [`core/`](core/)), released as **beta `v0.1.0-beta`**.
+An earlier `nftclient/` + `server/` prototype that did not compile has been
+removed and fully superseded by `core/` (it remains in git history).
 
 ---
 
@@ -248,4 +247,3 @@ builds offline and an upstream change cannot silently break it.
   sharing the same `core` over a stable API.
 
 See [`core/README.md`](core/README.md) for package-level details.
-```

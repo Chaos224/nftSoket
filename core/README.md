@@ -52,6 +52,5 @@ works with no network.
   full copies everywhere.
 - `aead` envelope is versioned (byte 0) so the format can evolve without breaking
   stored data.
-- The legacy top-level `nftclient/` and `server/` directories predate this module
-  and do not compile; they will be replaced by Phases 3–4.
-```
+- Native clients (Windows desktop app, mobile/web) are Phase 4, built on this
+  module over the stable APIs above.
